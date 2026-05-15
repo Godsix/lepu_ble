@@ -1,16 +1,20 @@
 # LEPU PF-10AW Pulse Oximeter BLE App
 
+## Quick Start
+
 1. Clone the repository:
 
 2. Install the dependencies:
 
-> cd lepu_ble
->
-> pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
+```
 
 3. Run the app:
 
-> python gui.py
+```bash
+python gui.py
+```
 
 Run the app on Python 3.8 or higher.
 
@@ -21,3 +25,7 @@ Run effect:
 You can enable log and monitor the PPG wave data by clicking the "Log" button.
 
 neurokit2 is used to analyze the PPG wave data.
+
+```bash
+pip install neurokit2
+```
