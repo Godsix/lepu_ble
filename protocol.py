@@ -8,12 +8,16 @@ Created on Thu May 14 09:10:23 2026
 import re
 import time
 import struct
+import logging
+from enum import StrEnum
+
+LOG_LOGGER = logging.getLogger("app.log")
 
 
 def split_packets(data: bytes | bytearray) -> list[bytes]:
-    # 以 AA55 为分隔符split，过滤空块
+    """以 AA55 为分隔符拆分，仅返回以 AA55 开头的完整包"""
     parts = re.split(b'(?=\xaa\x55)', data)
-    return [x for x in parts if len(x) >= 2]
+    return [x for x in parts[1:] if len(x) >= 2]
 
 
 def byte_to_point_str(value: int) -> str:
@@ -56,7 +60,7 @@ def parse_ir_red_freq(content: bytes) -> dict:
     return {"ir_frq": ir_frq, "red_frq": red_frq}
 
 
-def parse_string(content: bytes) -> dict:
+def parse_string(content: bytes) -> str:
     return content.decode("latin-1")
 
 
@@ -100,80 +104,59 @@ def parse_device_info_0f(content: bytes) -> dict:
     }
 
 
-def parse_int_little(content: bytes) -> int:
-    return int.from_bytes(content[:4], "little")
+def parse_bool(content: bytes) -> bool:
+    return int.from_bytes(content[:4], "little") == 1
 
 
-def parse_bool(content: bytes) -> True:
-    return parse_int_little(content) == 1
-
-
-def pipeline_work_mode(data):
-    mode = data['mode']
-    if mode == 1:
-        print("Spot mode")
-        step = data['step']
-        if step == 2:
-            if data['para1'] == 0:
-                print("Stop Measuring")
-            else:
-                print("Start Measuring")
-    elif mode == 2:
-        print("Continuous Mode")
-    elif mode == 3:
-        print("Stop mea")
-    else:
-        return
-
-
-def pipeline_battery(data):
-    level = data['battery_level']
-    if level == 0:
-        power = 25
-    elif level == 1:
-        power = 50
-    elif level == 2:
-        power = 75
-    elif level == 3:
-        power = 100
-    else:
-        return
-    return power
-
-
-def pipeline_data_param(data):
-    if data['is_probe_off']:
-        result = {'spo2': '--', 'pr': '--', 'pi': '--'}
-    else:
-        result = {'spo2': data['spo2'], 'pr': data['pr'], 'pi': data['pi']}
-    pipeline_battery(data)
-    return result
+class BLEMsgType(StrEnum):
+    """BLE 协议消息类型枚举，值即为协议中使用的 name 字符串。"""
+    # Token 240 (0xF0): 设备信息 / 配置
+    MSG_TYPE_DEVICE_INFO = 'TYPE_DEVICE_INFO'
+    MSG_TYPE_DEVICE_SN = 'TYPE_DEVICE_SN'
+    MSG_EVENT_FW_BATTERY = 'EventPC60FwBattery'
+    MSG_GET_DEVICE_MAC = 'MSG_GET_DEVICE_MAC'
+    MSG_SET_DEVICE_MAC = 'MSG_SET_DEVICE_MAC'
+    MSG_SET_DEVICE_SN = 'MSG_SET_DEVICE_SN'
+    MSG_GET_CODE = 'MSG_GET_CODE'
+    MSG_SET_CODE = 'MSG_SET_CODE'
+    # Token 241 (0xF1): CMEI
+    MSG_GET_DEVICE_CMEI = 'MSG_GET_DEVICE_CMEI'
+    MSG_SET_DEVICE_CMEI = 'MSG_SET_DEVICE_CMEI'
+    # Token 15 (0x0F): 运行时数据
+    MSG_HEARTBEAT = 'MSG_HEARTBEAT'
+    MSG_EVENT_RT_DATA_PARAM = 'EventPC60FwRtDataParam'
+    MSG_EVENT_RT_DATA_WAVE = 'EventPC60FwRtDataWave'
+    MSG_GET_DEVICE_INFO_0F = 'MSG_GET_DEVICE_INFO_0F'
+    MSG_ENABLE_PARAM = 'MSG_ENABLE_PARAM'
+    MSG_ENABLE_WAVE = 'MSG_ENABLE_WAVE'
+    MSG_IR_RED_FREQ = 'MSG_IR_RED_FREQ'
+    MSG_WORK_STATUS_DATA = 'WORK_STATUS_DATA'
 
 
 PARSER_INFO = {
     240: {
-        1: {'name': 'TYPE_DEVICE_INFO', 'length': 3, 'func': parse_device_info},
-        2: {'name': 'TYPE_DEVICE_SN', 'func': parse_string_utf8},
-        3: {'name': 'EventPC60FwBattery', 'struct': ("<B", ("battery_level", ))},
-        33: {'name': 'MSG_GET_DEVICE_MAC', 'length': 4, 'func': None},
-        34: {'name': 'MSG_SET_DEVICE_MAC', 'func': parse_bool},
-        35: {'name': 'MSG_SET_DEVICE_SN', 'func': parse_bool},
-        65: {'name': 'MSG_GET_CODE', 'func': parse_string},
-        66: {'name': 'MSG_SET_CODE', 'func': parse_bool},
+        1: {'name': BLEMsgType.MSG_TYPE_DEVICE_INFO, 'length': 4, 'func': parse_device_info},
+        2: {'name': BLEMsgType.MSG_TYPE_DEVICE_SN, 'func': parse_string_utf8},
+        3: {'name': BLEMsgType.MSG_EVENT_FW_BATTERY, 'struct': ("<B", ("battery_level", ))},
+        33: {'name': BLEMsgType.MSG_GET_DEVICE_MAC, 'length': 4, 'func': None},
+        34: {'name': BLEMsgType.MSG_SET_DEVICE_MAC, 'func': parse_bool},
+        35: {'name': BLEMsgType.MSG_SET_DEVICE_SN, 'func': parse_bool},
+        65: {'name': BLEMsgType.MSG_GET_CODE, 'func': parse_string},
+        66: {'name': BLEMsgType.MSG_SET_CODE, 'func': parse_bool},
     },
     241: {
-        33: {'name': 'MSG_GET_DEVICE_CMEI', 'length': 4, 'func': parse_string_utf8},
-        34: {'name': 'MSG_SET_DEVICE_CMEI', 'func': parse_bool},
+        33: {'name': BLEMsgType.MSG_GET_DEVICE_CMEI, 'length': 4, 'func': parse_string_utf8},
+        34: {'name': BLEMsgType.MSG_SET_DEVICE_CMEI, 'func': parse_bool},
     },
     15: {
-        0: {'name': 'MSG_HEARTBEAT', 'func': None},
-        1: {'name': 'EventPC60FwRtDataParam', 'length': 6, 'func': parse_data_param},
-        2: {'name': 'EventPC60FwRtDataWave', 'length': 5, 'func': parse_data_wave},
-        3: {'name': 'MSG_GET_DEVICE_INFO_0F', 'length': 2, 'func': parse_device_info_0f},
-        4: {'name': 'MSG_ENABLE_PARAM', 'func': None},
-        5: {'name': 'MSG_ENABLE_WAVE', 'func': None},
-        32: {'name': 'MSG_IR_RED_FREQ', 'length': 4, 'func': parse_ir_red_freq},
-        33: {'name': 'WORK_STATUS_DATA', 'length': 4,
+        0: {'name': BLEMsgType.MSG_HEARTBEAT, 'func': None},
+        1: {'name': BLEMsgType.MSG_EVENT_RT_DATA_PARAM, 'length': 6, 'func': parse_data_param},
+        2: {'name': BLEMsgType.MSG_EVENT_RT_DATA_WAVE, 'length': 5, 'func': parse_data_wave},
+        3: {'name': BLEMsgType.MSG_GET_DEVICE_INFO_0F, 'length': 2, 'func': parse_device_info_0f},
+        4: {'name': BLEMsgType.MSG_ENABLE_PARAM, 'func': None},
+        5: {'name': BLEMsgType.MSG_ENABLE_WAVE, 'func': None},
+        32: {'name': BLEMsgType.MSG_IR_RED_FREQ, 'length': 4, 'func': parse_ir_red_freq},
+        33: {'name': BLEMsgType.MSG_WORK_STATUS_DATA, 'length': 4,
              'struct': ("<BBBB", ("mode", "step", "para1", "para2"))},
     }
 }
@@ -181,27 +164,32 @@ PARSER_INFO = {
 
 def parse_protocol(data: bytes | bytearray):
     if len(data) < 5:
-        print('response size error', data.hex())
+        LOG_LOGGER.warning("Packet too short: %s", data.hex())
         return None
     result = None
     mv = memoryview(data)
     timestamp = time.time()
     token, length, type_ = struct.unpack_from("<xxBBB", mv)
     content = mv[5:-1]
-    # print({'token': token, 'length': length, 'type': type_, 'content': content})
+    LOG_LOGGER.debug({'token': token, 'length': length, 'type': type_, 'content': content})
     if (token_parser := PARSER_INFO.get(token)) is not None:
         if (type_parser := token_parser.get(type_)) is not None:
             length = type_parser.get('length')
             if not content or (length and len(content) < length):
-                print('response size error', len(content))
-                return
-            if st := type_parser.get('struct'):
-                ret = dict(zip(st[1], struct.unpack_from(st[0], content)))
-            elif func := type_parser.get('func'):
-                ret = func(content)
-            else:
-                print(type_parser['name'])
-                return
+                LOG_LOGGER.warning("Content size mismatch: expected=%s actual=%s",
+                                   length, len(content))
+                return None
+            try:
+                if st := type_parser.get('struct'):
+                    ret = dict(zip(st[1], struct.unpack_from(st[0], content)))
+                elif func := type_parser.get('func'):
+                    ret = func(content)
+                else:
+                    LOG_LOGGER.debug("Unhandled message: %s", type_parser['name'])
+                    return None
+            except (struct.error, IndexError, ValueError) as e:
+                LOG_LOGGER.warning("Parse error for %s: %s", type_parser['name'], e)
+                return None
             if ret is not None:
                 if isinstance(ret, dict):
                     result = {'name': type_parser['name'],
@@ -212,7 +200,7 @@ def parse_protocol(data: bytes | bytearray):
                               'timestamp': timestamp,
                               'value': ret}
         else:
-            print('Unknown Type', (token, type_))
+            LOG_LOGGER.debug("Unknown type: token=%s type=%s", token, type_)
     else:
-        print('Unknown Token', (token, type_))
+        LOG_LOGGER.debug("Unknown token: token=%s type=%s", token, type_)
     return result

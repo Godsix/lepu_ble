@@ -25,7 +25,7 @@ from PyQt6.QtSvg import QSvgRenderer
 import qasync
 from bleak import (BleakScanner, BleakClient, BLEDevice, AdvertisementData,
                    BleakGATTCharacteristic)
-from protocol import split_packets, parse_protocol
+from protocol import split_packets, parse_protocol, BLEMsgType
 
 # ── BLE Constants ────────────────────────────────────────────────────────────
 NAME_PREFIX = "PF-10AW"
@@ -54,7 +54,8 @@ C_BTN_FALSE = "#E5E5EA"
 
 RESC = osp.join(osp.dirname(__file__), 'resc')
 
-LOGGER = logging.getLogger("app")
+LOG_LOGGER = logging.getLogger("app.log")
+DATA_LOGGER = logging.getLogger("app.data")
 
 
 def set_windows_appusermodelid(user_id: str):
@@ -72,7 +73,6 @@ def set_windows_appusermodelid(user_id: str):
 class PPGWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(160)
         self.wave_data = deque(maxlen=300)
         self.setStyleSheet("background: transparent;")
 
@@ -89,52 +89,50 @@ class PPGWidget(QWidget):
         # 背景
         painter.fillRect(self.rect(), QColor(C_CARD))
 
-        data = list(self.wave_data)
-        if len(data) < 2:
+        if (n_points := len(self.wave_data)) < 2:
             painter.setPen(QColor(C_SUBTEXT))
             painter.drawText(self.rect(),
                              Qt.AlignmentFlag.AlignCenter,
                              "等待波形数据...")
-            return
+        else:
+            # 网格线
+            grid_pen = QPen(QColor("#EEF3F8"), 1, Qt.PenStyle.DotLine)
+            painter.setPen(grid_pen)
+            for i in range(1, 4):
+                y = pad_t + (h - pad_t - pad_b) * i / 4
+                painter.drawLine(pad_l, int(y), w - pad_r, int(y))
 
-        # 网格线
-        grid_pen = QPen(QColor("#EEF3F8"), 1, Qt.PenStyle.DotLine)
-        painter.setPen(grid_pen)
-        for i in range(1, 4):
-            y = pad_t + (h - pad_t - pad_b) * i / 4
-            painter.drawLine(pad_l, int(y), w - pad_r, int(y))
+            # wave path
+            plot_w = w - pad_l - pad_r
+            plot_h = h - pad_t - pad_b
 
-        # wave path
-        plot_w = w - pad_l - pad_r
-        plot_h = h - pad_t - pad_b
-        step = plot_w / max(len(data) - 1, 1)
+            step = plot_w / max(n_points - 1, 1)
 
-        path = QPainterPath()
-        for i, val in enumerate(data):
-            x = pad_l + i * step
-            y = pad_t + plot_h - (val / 127.0) * plot_h
-            if i == 0:
-                path.moveTo(x, y)
-            else:
-                path.lineTo(x, y)
+            path = QPainterPath()
+            for i, val in enumerate(self.wave_data):
+                x = pad_l + i * step
+                y = pad_t + plot_h - (val / 127.0) * plot_h
+                if i == 0:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
 
-        # 渐变填充
-        grad = QLinearGradient(0, pad_t, 0, h - pad_b)
-        grad.setColorAt(0.0, QColor(26, 188, 168, 100))
-        grad.setColorAt(1.0, QColor(26, 188, 168, 0))
+            # 渐变填充
+            grad = QLinearGradient(0, pad_t, 0, h - pad_b)
+            grad.setColorAt(0.0, QColor(26, 188, 168, 100))
+            grad.setColorAt(1.0, QColor(26, 188, 168, 0))
 
-        fill_path = QPainterPath(path)
-        fill_path.lineTo(pad_l + (len(data) - 1) * step, h - pad_b)
-        fill_path.lineTo(pad_l, h - pad_b)
-        fill_path.closeSubpath()
-        painter.fillPath(fill_path, QBrush(grad))
+            fill_path = QPainterPath(path)
+            fill_path.lineTo(pad_l + (n_points - 1) * step, h - pad_b)
+            fill_path.lineTo(pad_l, h - pad_b)
+            fill_path.closeSubpath()
+            painter.fillPath(fill_path, QBrush(grad))
 
-        # wave line
-        wave_pen = QPen(QColor(C_PPG), 2.0, Qt.PenStyle.SolidLine,
-                        Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(wave_pen)
-        painter.drawPath(path)
-
+            # wave line
+            wave_pen = QPen(QColor(C_PPG), 2.0, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(wave_pen)
+            painter.drawPath(path)
         painter.end()
 
 # ── Card Widget ───────────────────────────────────────────────────────────
@@ -260,7 +258,6 @@ class BleWorker(QObject):
         for pack in split_packets(data):
             ret = parse_protocol(pack)
             if ret is not None:
-                # print(ret)
                 self.data_received.emit(ret)
 
     async def run(self):
@@ -317,18 +314,25 @@ class DynamicSvgWidget(QWidget):
         super().__init__(parent)
         with open(path, encoding='utf-8') as file:
             svg_data = file.read()
-        self.svg = svg_data
-        self.color = "#26D2BE"
+        self._base_svg = svg_data
+        self._color = "currentColor"
+        self._renderer = self._build_renderer(self._color)
+
+    def _build_renderer(self, color):
+        svg = self._base_svg.replace('currentColor', color)
+        return QSvgRenderer(svg.encode('utf-8'))
 
     def set_icon_color(self, color_str):
-        self.color = color_str
-        self.update()  # 触发重绘
+        if self._color == color_str:
+            return
+        self._color = color_str
+        self._renderer = self._build_renderer(color_str)
+        self.update()
 
     def paintEvent(self, event):  # pylint: disable=C0103
         painter = QPainter(self)
-        svg = self.svg.replace('currentColor', self.color)
-        renderer = QSvgRenderer(svg.encode('utf-8'))
-        renderer.render(painter)
+        self._renderer.render(painter)
+        painter.end()
 
 
 class Switch(QWidget):
@@ -427,7 +431,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(520, 720)
         self.resize(560, 780)
         self.setStyleSheet(f"QMainWindow {{ background: {C_BG}; }}")
-        self.logger = LOGGER
+        self.logger = DATA_LOGGER
         self.logger.setLevel(logging.DEBUG)
         self.logger.handlers.clear()
         self.file_handler = logging.FileHandler("ble.log", encoding="utf-8")
@@ -678,9 +682,7 @@ class MainWindow(QMainWindow):
         self.is_logging = value
 
     def _get_range_value(self, value: int, div=None) -> int | None:
-        if not value:
-            return None
-        if 1 <= value < 255:
+        if value and 1 <= value < 255:
             return value if div is None else value / div
         return None
 
@@ -745,20 +747,20 @@ class MainWindow(QMainWindow):
 
     def _on_data_received(self, data: dict):
         name = data.get("name")
-        if name == "EventPC60FwRtDataWave":
+        if name == BLEMsgType.MSG_EVENT_RT_DATA_WAVE:
             self._on_rt_data_wave(data)
             self.log_to_file(data, 'wave_rev_data')
-        elif name == "EventPC60FwRtDataParam":
+        elif name == BLEMsgType.MSG_EVENT_RT_DATA_PARAM:
             self._on_rt_data_param(data)
             self.log_to_file(data,
                              'spo2', 'pr', 'pi', 'is_probe_off',
                              'is_pulse_searching', 'battery_level')
-        elif name == "EventPC60FwBattery":
+        elif name == BLEMsgType.MSG_EVENT_FW_BATTERY:
             self._on_fw_battery(data)
-        elif name == "WORK_STATUS_DATA":
+        elif name == BLEMsgType.MSG_WORK_STATUS_DATA:
             self._on_work_status_data(data)
         else:
-            print(f"Unknown event: {name}")
+            LOG_LOGGER.error("Unknown event: %s", name)
 
     def closeEvent(self, event):   # pylint: disable=C0103
         self.ble_worker.stop()
@@ -767,12 +769,25 @@ class MainWindow(QMainWindow):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 def main():
+    LOG_LOGGER.setLevel(logging.DEBUG)
+    LOG_LOGGER.handlers.clear()
+    _console_handler = logging.StreamHandler(sys.stdout)
+    _console_handler.setLevel(logging.INFO)
+    _console_handler.setFormatter(logging.Formatter('%(message)s'))
+    LOG_LOGGER.addHandler(_console_handler)
+    _file_handler = logging.FileHandler("error.log", encoding="utf-8")
+    _file_handler.setLevel(logging.ERROR)
+    LOG_LOGGER.addHandler(_file_handler)
+    LOG_LOGGER.propagate = False
+
     app = QApplication(sys.argv)
     icon = QIcon(osp.join(RESC, "ic_launcher.png"))
     app.setWindowIcon(icon)
     app.setStyle("Fusion")
+
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
+
     window = MainWindow()
     window.setWindowIcon(icon)
     set_windows_appusermodelid('com.lepu.ble')
